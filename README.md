@@ -3,5 +3,8 @@ This is a simple utility that switches sway/i3 workspaces similar to how xmonad 
 # Usage
 To use it, just invoke it with the workspace you want to switch to, like `switch 2`, or `switch web`, and it will switch to it if the desired workspace is not displayed on any output, or swap your current workspace with the desired one if the desired workspace is already open on another output.
 
+# Building
+You need Musl available, and you need to invoke `make` with the `out` variable defined, like `out="../wkSwitch" make` where `../wkSwitch` is a directory. Or you could just use the default.nix file by invoking it with `callPackage` like `(pkgs.callPackage ./wkSwitch/default.nix { })` where pkgs is nixpkgs. I use that expression in home-manager, but you could build it manually by doing `nix-build -E 'with import <nixpkgs> {}; callPackage ./default.nix {}'`
+
 # Bugs
 It doesn't support switching to workspaces using their number ID, but sway treats string workspace identifiers as numerical identifiers if they are numbers, so I'm not aware of any problems it causes. `switch 2` will still switch to the numerical second workspace, as far as I can tell.
