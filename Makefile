@@ -1,5 +1,5 @@
 
-exe = switch
+exe = wkswitch
 
 ${exe}: main.c
 	musl-gcc -static -DJSMN_PARENT_LINKS -DJSMN_STRICT -O3 -o ${exe} main.c
