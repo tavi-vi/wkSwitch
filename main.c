@@ -11,6 +11,7 @@
 #define headerLength (strlen(magic)+sizeof(int32_t)+sizeof(int32_t))
 
 int s;
+int jumpCount = 0;
 
 void
 panic(char *s) {
@@ -40,15 +41,21 @@ getResponseLen() {
 }
 
 void
+printTok(char *j, jsmntok_t t) {
+    printf("parent: %d  type: %d  start: %d  end: %d  size: %d\n"
+        , t.parent
+        , t.type
+        , t.start
+        , t.end
+        , t.size);
+}
+
+void
 printToks(char *j, jsmntok_t *ts, int tlen) {
     int i;
     for(i=0; i<tlen; i++) {
-        printf("parent: %d  type: %d  start: %d  end: %d  size: %d\n"
-            , ts[i].parent
-            , ts[i].type
-            , ts[i].start
-            , ts[i].end
-            , ts[i].size);
+        printf("%d  ", i);
+        printTok(j, ts[i]);
     }
 }
 
@@ -58,9 +65,9 @@ typedef struct {
 } strn;
 
 typedef enum {
-    WS_DoesntExist,
-    WS_NotVisible,
-    WS_Visible
+    WS_CurrentHasWindows = 1,
+    WS_WantedHasWindows = 1 << 1,
+    WS_WantedVisible = 1 << 2
 } wantedState;
 
 typedef struct {
@@ -75,11 +82,34 @@ jsmnToStrn(char *j, jsmntok_t t) {
     return (strn) { &j[t.start], t.end-t.start };
 }
 
-int
+inline int
 tokStrEq(char *j, jsmntok_t t, char *s) {
     if(t.end - t.start != strlen(s))
         return 0;
-    return strncmp(&j[t.start], s, t.end-t.start) ? 0 : 1;
+    return memcmp(&j[t.start], s, t.end-t.start) ? 0 : 1;
+}
+
+int
+skipTok(jsmntok_t *ts, int tlen, int toki) {
+    int length = ts[toki].end - ts[toki].start;
+    int nexti = toki+length/8; // 8 is magic, tuned based on testing.
+    if(nexti>tlen)
+        nexti = tlen-1;
+    if(ts[nexti].start < ts[toki].end) {
+        for(; nexti<tlen; nexti++) {
+            jumpCount++;
+            if(ts[nexti].start > ts[toki].end)
+                break;
+        }
+    } else {
+        for(; nexti>0; nexti--) {
+            jumpCount++;
+            if(ts[nexti].start < ts[toki].end)
+                break;
+        }
+        nexti++;
+    }
+    return nexti;
 }
 
 switchInfo
@@ -90,13 +120,16 @@ getSwitchInfo(char *j, jsmntok_t *ts, int tlen, char *wanted) {
         exit(-1);
     }
 
+    int gotOutputName = 0, gotOutputNodes = 0;
     int gotCurrent = 0, gotWanted = 0;
     switchInfo result;
-    result.wantedState = WS_DoesntExist;
+    result.wantedState = 0;
 
     int currentWorkspace, focused = 0, visible = 0;
     jsmntok_t *name, *output;
-    for(; i<=tlen; i++) {
+    while(i<tlen) {
+        if()
+            break;
         if(i == tlen || ts[i].parent == 0) {
             if(name && output)
                 if(visible && focused) {
@@ -138,14 +171,18 @@ getSwitchInfo(char *j, jsmntok_t *ts, int tlen, char *wanted) {
                 if(ts[i].type != JSMN_STRING)
                     panic("panic at name parse");
                 name = &ts[i];
-            } else if(tokStrEq(j, ts[i], "output") && ts[i].size == 1) {
-                i++;
-                if(ts[i].type != JSMN_STRING)
-                    panic("panic at output parse");
-                output = &ts[i];
             }
         }
     }
+    return result;
+}
+
+int
+testSkip(jsmntok_t *ts, int len, int i) {
+    int sane, test;
+    for(sane=i; sane<len && ts[i].end > ts[sane].start; sane++);
+    test = skipTok(ts, len, i);
+    return test == sane;
 }
 
 int
@@ -179,10 +216,8 @@ main(int argc, char **argv) {
     }
     
     sendHeader();
-    int32_t i;
-    // char *command = "exec alacritty";
     sendInt(0);
-    sendInt(1);
+    sendInt(4);
     int32_t replyLen = getResponseLen();
     char *reply = calloc(sizeof(char), replyLen);
     jsmntok_t *replyTok = calloc(sizeof(jsmntok_t), replyLen);
@@ -199,29 +234,42 @@ main(int argc, char **argv) {
         return -1;
     }
     
+    // printToks(reply, replyTok, pr);
+    int i;
+    for(i=0; i<pr; i++)
+        if(replyTok[i].parent == 0)
+            break;
+    for(i=0; i<pr; i++) {
+        if(!testSkip(replyTok, pr, i)) {
+            panic("uh oh\n");
+        }
+    }
+    printf("%d\n", jumpCount);
+    return 0;
+    
     switchInfo si = getSwitchInfo(reply, replyTok, pr, argv[1]);
 
     int cmdMaxLen = 512;
     int32_t cmdLen;
     char *cmd = malloc(cmdMaxLen);
-    switch(si.wantedState) {
-    case WS_DoesntExist:
-        cmdLen = snprintf(cmd, cmdMaxLen, "workspace %s", wantedWorkspace);
-        break;
-    case WS_NotVisible:
-        cmdLen = snprintf(cmd, cmdMaxLen, "[workspace=\"%s\"] move workspace to output %.*s; workspace %s",
-            wantedWorkspace, si.currentOutput.len, si.currentOutput.s,
-            wantedWorkspace);
-        break;
-    case WS_Visible:
-        cmdLen = snprintf(cmd, cmdMaxLen,
-            "[workspace=\"%s\"] move workspace to output %.*s; [workspace=\"%.*s\"] move workspace to output %.*s; workspace %s",
-            wantedWorkspace, si.currentOutput.len, si.currentOutput.s,
-            si.currentWorkspace.len, si.currentWorkspace.s, si.wantedOutput.len, si.wantedOutput.s,
-            wantedWorkspace
-            );
-        break;
-    }
+    // switch(si.wantedState) {
+    // case WS_DoesntExist:
+    //     cmdLen = snprintf(cmd, cmdMaxLen, "workspace %s", wantedWorkspace);
+    //     break;
+    // case WS_NotVisible:
+    //     cmdLen = snprintf(cmd, cmdMaxLen, "[workspace=\"%s\"] move workspace to output %.*s; workspace %s",
+    //         wantedWorkspace, si.currentOutput.len, si.currentOutput.s,
+    //         wantedWorkspace);
+    //     break;
+    // case WS_Visible:
+    //     cmdLen = snprintf(cmd, cmdMaxLen,
+    //         "[workspace=\"%s\"] move workspace to output %.*s; [workspace=\"%.*s\"] move workspace to output %.*s; workspace %s",
+    //         wantedWorkspace, si.currentOutput.len, si.currentOutput.s,
+    //         si.currentWorkspace.len, si.currentWorkspace.s, si.wantedOutput.len, si.wantedOutput.s,
+    //         wantedWorkspace
+    //         );
+    //     break;
+    // }
     if(cmdLen >= cmdMaxLen)
         panic("built command is too long\n");
     sendHeader();
