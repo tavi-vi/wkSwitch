@@ -57,8 +57,8 @@ test "i3-workspaces-parse" {
         \\ }
         \\]
     );
-    const x = try std.json.parse(I3Workspaces, &stream, .{ .allocator = allocator, .ignore_unknown_fields = true});
-    defer std.json.parseFree(I3Workspaces, x, .{ .allocator = allocator });
+    const x = try std.json.parse([]I3Workspace, &stream, .{ .allocator = allocator, .ignore_unknown_fields = true});
+    defer std.json.parseFree([]I3Workspace, x, .{ .allocator = allocator });
     std.debug.print("{s}\n", .{x});
 }
 
@@ -217,7 +217,7 @@ const I3Tree = struct {
     nodes: []Output,
 };
 
-const I3Workspaces = []struct {
+const I3Workspace = struct {
     output: []const u8,
     name: []const u8,
     visible: bool,
@@ -303,7 +303,7 @@ const I3IPC = struct {
         return SocketError.ReadFail;
     }
     fn request(self: I3IPC, allocator: std.mem.Allocator, msg_type: u32, msg: []u8) SocketError![]u8 {
-        var magic = "i3-ipc";
+        const magic = "i3-ipc";
         const Header = packed struct {
             magic: [6]u8,
             len: u32,
@@ -326,9 +326,11 @@ const I3IPC = struct {
             _ = std.os.write(self.fd, msg) catch return writeError();
         
         _ = std.os.read(self.fd, asByteArray(@TypeOf(h), &h)) catch return readError();
-        if(!std.mem.eql(u8, &h.magic, magic)) {
-            // errPrint("Received incorrect magic.", .{});
-            // return error.ProtocolFailure;
+        
+        const recvMagic = h.magic; // Compiler segfaults if we try to reference it directly. Zig/LLVM bug
+        if(!std.mem.eql(u8, &recvMagic, magic)) {
+            errPrint("Received incorrect magic.", .{});
+            return error.ProtocolFailure;
         }
         if(h.len > 0) {
             var response: []u8 = allocator.alloc(u8, h.len) catch return error.ResourceFailure;
@@ -340,6 +342,16 @@ const I3IPC = struct {
     }
 };
 
+const State = struct {
+    currentHasWindows: bool = false,
+    wantedHasWindows: bool = false,
+    wantedVisible: bool = false,
+};
+
+fn oom() noreturn {
+    errPrint("Out of memory", .{});
+    std.os.exit(255);
+}
 
 pub fn main() u8 {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -355,13 +367,77 @@ pub fn main() u8 {
     };
     response = ipc.request(allocator, 1, &[0]u8{}) catch |err| return socketErrorToInt(err);
     stream = std.json.TokenStream.init(response);
-    const ws = std.json.parse(I3Workspaces, &stream, .{ .allocator = allocator, .ignore_unknown_fields = true}) catch {
+    const ws = std.json.parse([]I3Workspace, &stream, .{ .allocator = allocator, .ignore_unknown_fields = true}) catch {
         errPrint("Failed to parse workspace json.", .{});
         return 100;
     };
-    
-    _ = tree;
-    _ = ws;
 
+    if(std.os.argv.len != 2) {
+        errPrint("Usage: wkswitch [workspace]\n", .{});
+        return 101;
+    }
+
+    const wantedWorkspaceName: []const u8 = std.mem.sliceTo(std.os.argv[1], 0);
+    var currentWorkspaceName: ?[]const u8 = null;
+    var wantedOutputName: ?[]const u8 = null;
+    var currentOutputName: ?[]const u8 = null;
+    var state = State{};
+
+    for (ws) |workspace| {
+        if(workspace.focused) {
+            currentWorkspaceName = workspace.name;
+            currentOutputName = workspace.output;
+        } else if(std.mem.eql(u8, workspace.name, wantedWorkspaceName)) {
+            wantedOutputName = workspace.output;
+            if(workspace.visible)
+                state.wantedVisible = true;
+        }
+    }
+
+    if(currentOutputName == null or currentWorkspaceName == null) {
+        errPrint("Failed to find current workspace or output\n", .{});
+        return 101;
+    }
+
+    for (tree.nodes) |output| {
+        const containsCurrent = std.mem.eql(u8, output.name, currentOutputName.?);
+        const containsWanted = wantedOutputName != null and std.mem.eql(u8, output.name, wantedOutputName.?);
+        
+        if(containsCurrent or containsWanted) {
+            for (output.nodes) |workspace| {
+                if(containsCurrent and std.mem.eql(u8, workspace.name, currentWorkspaceName.?) and workspace.nodes != null and workspace.nodes.?.len > 0)
+                    state.currentHasWindows = true;
+                if(containsWanted and std.mem.eql(u8, workspace.name, wantedWorkspaceName) and workspace.nodes != null and workspace.nodes.?.len > 0)
+                    state.wantedHasWindows = true;
+            }
+        }
+    }
+
+    // std.debug.print("{s} {s} {s} {s}\n", .{wantedWorkspaceName, currentWorkspaceName.?, wantedOutputName, currentOutputName.?});
+    // std.debug.print("{d}\n", .{state});
+
+    var command: []u8 = &[0]u8{};
+    if(wantedOutputName == null) {
+        command = std.fmt.allocPrint(allocator, "workspace {s}",
+            .{wantedWorkspaceName}) catch oom();
+    } else if(!state.wantedVisible) {
+        command = std.fmt.allocPrint(allocator, "[workspace=\"{s}\"] move workspace to output {s}; workspace {s}",
+            .{wantedWorkspaceName, currentOutputName, wantedWorkspaceName}) catch oom();
+    } else if(state.wantedHasWindows and state.currentHasWindows) {
+        command = std.fmt.allocPrint(allocator, "[workspace=\"{s}\"] move workspace to output {s}; [workspace=\"{s}\"] move workspace to output {s}; workspace {s}",
+            .{wantedWorkspaceName, currentOutputName, currentWorkspaceName, wantedOutputName, wantedWorkspaceName}) catch oom();
+    } else if(state.wantedHasWindows and !state.currentHasWindows) {
+        command = std.fmt.allocPrint(allocator, "move workspace to output {s}; [workspace=\"{s}\"] move workspace to output {s}; workspace {s}",
+            .{wantedOutputName, wantedWorkspaceName, currentOutputName, wantedWorkspaceName}) catch oom();
+    } else if(!state.wantedHasWindows and state.currentHasWindows) {
+        command = std.fmt.allocPrint(allocator, "workspace {s}; move workspace to output {s}; [workspace=\"{s}\"] move workspace to output {s}; workspace {s}",
+            .{wantedWorkspaceName, currentOutputName, currentWorkspaceName, wantedOutputName, wantedWorkspaceName}) catch oom();
+    } else if(!state.wantedHasWindows and !state.currentHasWindows) {
+        command = std.fmt.allocPrint(allocator, "move workspace to output {s}; focus output {s}; workspace {s}",
+            .{wantedOutputName, currentOutputName, wantedWorkspaceName}) catch oom();
+    }
+
+    response = ipc.request(allocator, 0, command) catch |err| return socketErrorToInt(err);
+    
     return 0;
 }
