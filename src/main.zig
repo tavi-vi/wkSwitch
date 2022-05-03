@@ -96,11 +96,11 @@ const I3IPC = struct {
 
     fn writeError() SocketError {
         errPrint("Failed to write to socket", .{});
-        return SocketError.WriteFail;
+        return error.WriteFail;
     }
     fn readError() SocketError {
         errPrint("Failed to read from socket", .{});
-        return SocketError.ReadFail;
+        return error.ReadFail;
     }
     fn request(self: I3IPC, allocator: std.mem.Allocator, msg_type: u32, msg: []u8) SocketError![]u8 {
         const magic = "i3-ipc";
@@ -196,7 +196,7 @@ pub fn main() u8 {
 
     if(currentOutputName == null or currentWorkspaceName == null) {
         errPrint("Failed to find current workspace or output\n", .{});
-        return 101;
+        return 100;
     }
 
     for (tree.nodes) |output| {
