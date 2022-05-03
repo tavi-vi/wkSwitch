@@ -241,22 +241,6 @@ pub fn main() u8 {
 
 // --- Tests --- //
 
-test {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
-    const expect = std.testing.expect;
-    const Place = struct { lat: f32, long: f32, garbage: []struct{id: usize} };
-
-    var stream = std.json.TokenStream.init(
-        \\{ "lat": 40.684540, "long": -74.401422, "garbage": [ {"id": 1}, {"id": 2} ] }
-    );
-    const x = try std.json.parse(Place, &stream, .{ .allocator = arena.allocator(), .ignore_unknown_fields = true});
-
-    try expect(x.lat == 40.684540);
-    try expect(x.long == -74.401422);
-}
-
 
 // test allocator is allotted twice the memory it needs to operate
 test "i3-workspaces-parse" {
