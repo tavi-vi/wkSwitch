@@ -7,8 +7,10 @@
       (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
         {
+          defaultPackage = import ./default.nix pkgs;
           devShell = pkgs.mkShell {
             buildInputs = with pkgs; [ zig ];
+            hardeningDisable = [ "all" ];
           };
         }
       );

@@ -1,7 +1,10 @@
-{stdenv, musl, ...}:
+{stdenv, zig, ...}:
 
 stdenv.mkDerivation {
   name = "wkSwitch";
-  buildInputs = [ musl ];
+  buildInputs = [ zig ];
   src = builtins.path { path = ./.; name = "wkSwitch"; };
+  hardeningDisable = [ "all" ];
+
+  XDG_CACHE_HOME = "xdg_cache";
 }
